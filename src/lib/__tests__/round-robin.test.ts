@@ -324,3 +324,117 @@ describe('maxGames fairness (best-of-K generation)', () => {
     }
   });
 });
+
+describe('targetGames as a FLOOR (round up, never short a team)', () => {
+  const counts = (m: Match[]) => countGamesPerTeam(m.filter(x => x.status !== 'bye'));
+
+  it('4 teams, target 2 -> everyone plays exactly 2 (even parity)', () => {
+    for (let t = 0; t < 12; t++) {
+      const m = generateRoundRobin({ teamIds: ['a', 'b', 'c', 'd'], courtCount: 2, divisionId: 'd1', targetGames: 2 });
+      ['a', 'b', 'c', 'd'].forEach(x => expect(counts(m).get(x)).toBe(2));
+    }
+  });
+
+  it('5 teams, target 3 -> everyone >=3, exactly ONE team rounds up to 4', () => {
+    for (let t = 0; t < 15; t++) {
+      const m = generateRoundRobin({ teamIds: ['a', 'b', 'c', 'd', 'e'], courtCount: 2, divisionId: 'd1', targetGames: 3 });
+      const vals = ['a', 'b', 'c', 'd', 'e'].map(x => counts(m).get(x) ?? 0);
+      vals.forEach(v => expect(v).toBeGreaterThanOrEqual(3)); // NO team below the target
+      expect(vals.filter(v => v === 4)).toHaveLength(1);       // parity rounds UP, not down
+      expect(vals.filter(v => v === 3)).toHaveLength(4);
+    }
+  });
+
+  it('never leaves any team below the target (random n & target)', () => {
+    for (let t = 0; t < 48; t++) {
+      const nTeams = 4 + (t % 6); // 4..9
+      const ids = Array.from({ length: nTeams }, (_, i) => `t${i}`);
+      const target = 1 + (t % (nTeams - 1));
+      const m = generateRoundRobin({ teamIds: ids, courtCount: 2, divisionId: 'd1', targetGames: target });
+      const c = counts(m);
+      const floor = Math.min(target, nTeams - 1);
+      ids.forEach(x => expect(c.get(x) ?? 0).toBeGreaterThanOrEqual(floor));
+    }
+  });
+
+  it('a per-team hard cap still wins over the target floor', () => {
+    for (let t = 0; t < 12; t++) {
+      const m = generateRoundRobin({
+        teamIds: ['a', 'b', 'c', 'd', 'e'], courtCount: 2, divisionId: 'd1',
+        targetGames: 3, teamMaxGames: new Map([['a', 1]]),
+      });
+      const c = counts(m);
+      expect(c.get('a') ?? 0).toBeLessThanOrEqual(1);                              // cap respected
+      ['b', 'c', 'd', 'e'].forEach(x => expect(c.get(x) ?? 0).toBeGreaterThanOrEqual(3)); // others meet floor
+    }
+  });
+});
+
+describe('Feature 4: Ready teams start on the first courts', () => {
+  const bothReady = (m: Match, ready: Set<string>) =>
+    !!m.homeTeamId && !!m.awayTeamId && ready.has(m.homeTeamId) && ready.has(m.awayTeamId);
+  const round1FirstOnCourt = (m: Match[], court: number) =>
+    m.find(x => x.roundNumber === 1 && x.status !== 'bye' && x.courtNumber === court);
+
+  it('round 1 Court 1 & Court 2 are Ready-vs-Ready (6 teams, 4 ready, 2 courts)', () => {
+    const ready = new Set(['r1', 'r2', 'r3', 'r4']);
+    for (let t = 0; t < 25; t++) {
+      const m = generateRoundRobin({
+        teamIds: ['r1', 'r2', 'r3', 'r4', 'w1', 'w2'], courtCount: 2, divisionId: 'd1', readyTeamIds: ready,
+      });
+      expect(bothReady(round1FirstOnCourt(m, 1)!, ready)).toBe(true);
+      expect(bothReady(round1FirstOnCourt(m, 2)!, ready)).toBe(true);
+    }
+  });
+
+  it('keeps the Ready-first opening even with a target floor', () => {
+    const ready = new Set(['r1', 'r2', 'r3', 'r4']);
+    for (let t = 0; t < 25; t++) {
+      const m = generateRoundRobin({
+        teamIds: ['r1', 'r2', 'r3', 'r4', 'w1', 'w2'], courtCount: 2, divisionId: 'd1',
+        targetGames: 2, readyTeamIds: ready,
+      });
+      expect(bothReady(round1FirstOnCourt(m, 1)!, ready)).toBe(true);
+      expect(bothReady(round1FirstOnCourt(m, 2)!, ready)).toBe(true);
+    }
+  });
+
+  it('a WIP team, never a Ready team, takes the bye when the count is odd', () => {
+    const ready = new Set(['r1', 'r2', 'r3', 'r4']);
+    for (let t = 0; t < 25; t++) {
+      const m = generateRoundRobin({
+        teamIds: ['r1', 'r2', 'r3', 'r4', 'w1'], courtCount: 2, divisionId: 'd1', readyTeamIds: ready,
+      });
+      const playingRound1 = new Set<string>();
+      for (const x of m.filter(x => x.roundNumber === 1 && x.status !== 'bye')) {
+        if (x.homeTeamId) playingRound1.add(x.homeTeamId);
+        if (x.awayTeamId) playingRound1.add(x.awayTeamId);
+      }
+      ['r1', 'r2', 'r3', 'r4'].forEach(r => expect(playingRound1.has(r)).toBe(true));
+    }
+  });
+
+  it('on regenerate, round 1 seats UNPLAYED Ready pairs (does not re-pair already-played ones)', () => {
+    // Reproduces the review finding: r1-r2 and r3-r4 already played; after adding
+    // WIP teams and regenerating, round 1's courts must hold UNPLAYED Ready pairs
+    // (else regenerate strips them as duplicates and seats WIP matches instead).
+    const ready = new Set(['r1', 'r2', 'r3', 'r4']);
+    const preserved = new Map([
+      ['r1::r2', { homeScore: 21, awayScore: 10 }],
+      ['r3::r4', { homeScore: 21, awayScore: 15 }],
+    ]);
+    for (let t = 0; t < 25; t++) {
+      const m = generateRoundRobin({
+        teamIds: ['r1', 'r2', 'r3', 'r4', 'w1', 'w2'], courtCount: 2, divisionId: 'd1',
+        readyTeamIds: ready, preservedResults: preserved,
+      });
+      for (const court of [1, 2]) {
+        const first = m.find(x => x.roundNumber === 1 && x.status === 'scheduled' && x.courtNumber === court);
+        expect(first, `court ${court} scheduled match`).toBeDefined();
+        expect(bothReady(first!, ready)).toBe(true);
+        const key = [first!.homeTeamId!, first!.awayTeamId!].sort().join('::');
+        expect(preserved.has(key), `court ${court} pair already played`).toBe(false);
+      }
+    }
+  });
+});

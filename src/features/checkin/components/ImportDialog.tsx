@@ -56,7 +56,7 @@ function findBestSheet(workbook: XLSX.WorkBook): string {
   return best;
 }
 
-function parseSpreadsheet(data: ArrayBuffer): { rows: ParsedRow[]; sheetName: string; sheetNames: string[] } {
+export function parseSpreadsheet(data: ArrayBuffer): { rows: ParsedRow[]; sheetName: string; sheetNames: string[] } {
   const workbook = XLSX.read(data, { type: 'array' });
   const sheetName = findBestSheet(workbook);
   const sheet = workbook.Sheets[sheetName];
@@ -96,9 +96,13 @@ function parseSpreadsheet(data: ArrayBuffer): { rows: ParsedRow[]; sheetName: st
       let status: ParsedPlayer['status'] = 'unknown';
       let linkGroup: string | null = null;
 
-      // Next column: status (IN/OUT/LATE)
+      // Next column: status (IN/OUT/LATE).
+      // NOTE: SheetJS names the FIRST empty-header column '' (empty string), so
+      // guard on `!== null` (column exists), NOT truthiness — an empty-string key
+      // is a real column. Using `statusKey &&` here silently dropped the status +
+      // link of Player 1 (the captain) of every row.
       const statusKey = pkIndex < keys.length - 1 ? keys[pkIndex + 1] : null;
-      if (statusKey && !normalize(statusKey).includes('player')) {
+      if (statusKey !== null && !normalize(statusKey).includes('player')) {
         const val = String(row[statusKey]).trim().toUpperCase();
         if (val === 'IN') status = 'in';
         else if (val === 'OUT') status = 'out';
@@ -106,7 +110,7 @@ function parseSpreadsheet(data: ArrayBuffer): { rows: ParsedRow[]; sheetName: st
 
         // Column after status: link group (single letter A-Z)
         const linkKey = pkIndex < keys.length - 2 ? keys[pkIndex + 2] : null;
-        if (linkKey && !normalize(linkKey).includes('player')) {
+        if (linkKey !== null && !normalize(linkKey).includes('player')) {
           const linkVal = String(row[linkKey]).trim().toUpperCase();
           if (linkVal.length === 1 && linkVal >= 'A' && linkVal <= 'Z') {
             linkGroup = linkVal;

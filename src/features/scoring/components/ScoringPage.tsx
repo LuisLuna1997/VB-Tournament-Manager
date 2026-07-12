@@ -1,5 +1,6 @@
 import { useTournamentStore } from '@/stores/tournament.store';
 import { getRoundsGrouped } from '@/lib/round-robin';
+import { fillFreeCourts } from '@/lib/court-fill';
 import { ScoreEntry } from './ScoreEntry';
 import { MatchCard } from '@/features/schedule/components/MatchCard';
 import { Button } from '@/components/ui/button';
@@ -136,11 +137,31 @@ export function ScoringPage({ divisionId }: Props) {
   // Collect ALL playable matches (current round + future rounds)
   const allPlayableMatches = sortedRounds.flatMap(([, rm]) => rm.filter(m => m.status !== 'bye'));
 
+  // Teams currently in-progress (busy) — can't be seated on a second court.
+  const busyTeamIds = new Set<string>();
+  for (const m of allPlayableMatches) {
+    if (m.status === 'in-progress') {
+      if (m.homeTeamId) busyTeamIds.add(m.homeTeamId);
+      if (m.awayTeamId) busyTeamIds.add(m.awayTeamId);
+    }
+  }
+
+  // Future scheduled matches (fill free courts / feed the queue).
+  const futureScheduled = upcomingRounds.flatMap(([, rm]) =>
+    rm.filter(m => m.status === 'scheduled' && m.homeTeamId && m.awayTeamId)
+  );
+
   // Include future matches that have court overrides in the court assignment pool
   const futureOverridden = allPlayableMatches.filter(
     m => m.roundNumber !== currentRoundNum && courtOverrides[m.id] !== undefined
   );
-  const courtPool = [...currentRoundMatches, ...futureOverridden];
+  const courtPool = fillFreeCourts(
+    [...currentRoundMatches, ...futureOverridden],
+    futureScheduled,
+    busyTeamIds,
+    division.courtCount,
+  );
+
   const courtAssignments = assignCourts(courtPool, division.courtCount, courtOverrides);
 
   // Auto-pin: if an in-progress match landed on a court without an override, persist it
@@ -157,25 +178,13 @@ export function ScoringPage({ divisionId }: Props) {
   );
   const completedThisRound = currentRoundMatches.filter(m => m.status === 'completed');
 
-  // Teams currently in-progress (busy)
-  const busyTeamIds = new Set<string>();
-  for (const m of allPlayableMatches) {
-    if (m.status === 'in-progress') {
-      if (m.homeTeamId) busyTeamIds.add(m.homeTeamId);
-      if (m.awayTeamId) busyTeamIds.add(m.awayTeamId);
-    }
-  }
-
-  // Queue: current round waiting + future round scheduled matches (for free courts)
+  // Queue: current-round waiting + future scheduled, excluding anything now on a court.
   const currentWaiting = currentRoundMatches.filter(
     m => m.status === 'scheduled' && !assignedMatchIds.has(m.id)
   );
-  const futureScheduled = upcomingRounds.flatMap(([, rm]) =>
-    rm.filter(m => m.status === 'scheduled' && m.homeTeamId && m.awayTeamId)
-  );
   const waitingMatches = [
     ...currentWaiting,
-    ...futureScheduled,
+    ...futureScheduled.filter(m => !assignedMatchIds.has(m.id)),
   ];
 
   const handleStartFinals = () => {

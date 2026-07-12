@@ -469,11 +469,12 @@ describe('Bug-fix regressions', () => {
     expect(useTournamentStore.getState().tournament.matches['nonexistent']).toBeUndefined();
   });
 
-  it('dropTeam removes the team round-robin matches including completed results', () => {
+  it('dropTeam keeps completed games (opponent still credited) but drops unplayed ones', () => {
     const { divId, teamIds } = setupDivisionWithTeams(['T1', 'T2', 'T3', 'T4']);
     useTournamentStore.getState().generateSchedule(divId);
     const matches = useTournamentStore.getState().getRoundRobinMatches(divId);
     const t1Match = matches.find(m => m.homeTeamId === teamIds[0] || m.awayTeamId === teamIds[0])!;
+    const opponentId = t1Match.homeTeamId === teamIds[0] ? t1Match.awayTeamId! : t1Match.homeTeamId!;
     useTournamentStore.getState().startMatch(t1Match.id);
     useTournamentStore.getState().updateScore(t1Match.id, 21, 10);
     useTournamentStore.getState().completeMatch(t1Match.id);
@@ -481,8 +482,15 @@ describe('Bug-fix regressions', () => {
     useTournamentStore.getState().dropTeam(teamIds[0]);
     const after = useTournamentStore.getState();
     expect(after.tournament.teams[teamIds[0]].checkinStatus).toBe('dropped');
+
     const remaining = after.getRoundRobinMatches(divId);
-    expect(remaining.some(m => m.homeTeamId === teamIds[0] || m.awayTeamId === teamIds[0])).toBe(false);
+    // The completed game against the dropped team is KEPT...
+    expect(remaining.some(m => m.id === t1Match.id && m.status === 'completed')).toBe(true);
+    // ...but its UNPLAYED (scheduled / bye) games are gone.
+    expect(remaining.some(m => m.status !== 'completed' && (m.homeTeamId === teamIds[0] || m.awayTeamId === teamIds[0]))).toBe(false);
+    // The opponent still gets credit for the game it played against the dropped team.
+    const opp = after.getStandings(divId).find(s => s.teamId === opponentId)!;
+    expect(opp.gamesPlayed).toBeGreaterThanOrEqual(1);
   });
 
   it('removeTeam cleans dangling evade references', () => {

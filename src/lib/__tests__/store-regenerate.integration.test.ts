@@ -140,7 +140,7 @@ describe('store regenerate probes', () => {
     expect(pairCount).toHaveLength(1);
   });
 
-  it('dropTeam then regenerate (the SchedulePage flow) leaves consistent schedule', () => {
+  it('dropTeam then regenerate (the SchedulePage flow) keeps the played game and rebuilds the rest', () => {
     const { divId, teamIds } = setup(['T1', 'T2', 'T3', 'T4', 'T5']);
     useTournamentStore.getState().generateSchedule(divId);
     const all = useTournamentStore.getState().getRoundRobinMatches(divId);
@@ -154,13 +154,17 @@ describe('store regenerate probes', () => {
     useTournamentStore.getState().regenerateSchedule(divId);
 
     const after = useTournamentStore.getState().getRoundRobinMatches(divId);
-    // No matches reference the dropped team
-    expect(after.some(m => m.homeTeamId === teamIds[0] || m.awayTeamId === teamIds[0])).toBe(false);
-    // Remaining 4 teams have a full RR (6 pairs)
-    const pairs = new Set(
-      after.filter(m => m.status !== 'bye' && m.homeTeamId && m.awayTeamId)
+    // The completed game against the dropped team survives (so the opponent's result still counts)...
+    expect(after.some(m => m.id === t1Match.id && m.status === 'completed')).toBe(true);
+    // ...but no UNPLAYED match references the dropped team.
+    expect(after.some(m => m.status !== 'completed' && (m.homeTeamId === teamIds[0] || m.awayTeamId === teamIds[0]))).toBe(false);
+    // The 4 active teams still form a full round-robin among themselves (6 pairs).
+    const activeIds = new Set(teamIds.slice(1));
+    const activePairs = new Set(
+      after.filter(m => m.status !== 'bye' && m.homeTeamId && m.awayTeamId
+        && activeIds.has(m.homeTeamId) && activeIds.has(m.awayTeamId))
         .map(m => pairKey(m.homeTeamId, m.awayTeamId))
     );
-    expect(pairs.size).toBe(6);
+    expect(activePairs.size).toBe(6);
   });
 });

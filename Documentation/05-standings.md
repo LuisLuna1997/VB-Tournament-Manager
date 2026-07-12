@@ -14,7 +14,10 @@ Only matches that are:
 - **`isFinals === false`** (finals never affect round-robin standings),
 
 with both team ids and both scores present. **Dropped** teams are excluded from
-the table entirely.
+the table entirely — but a completed game **against** a dropped team still counts
+for the surviving opponent (the tally updates whichever side is still in the
+table). Dropping a team therefore never erases its opponents' already-played
+results (`dropTeam` keeps completed matches; only unplayed ones are removed).
 
 ## Per-team tallies
 

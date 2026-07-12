@@ -259,7 +259,7 @@ export function SchedulePage({ divisionId }: Props) {
             <DialogTitle>Drop a Team</DialogTitle>
             <DialogDescription>
               Select a team to remove from the tournament. The schedule will regenerate automatically.
-              Completed results against this team will be removed.
+              Games already played against this team are kept, so their opponents' results still count.
             </DialogDescription>
           </DialogHeader>
           <Select value={dropTeamId} onValueChange={v => setDropTeamId(v ?? '')}>

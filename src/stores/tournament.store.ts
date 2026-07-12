@@ -17,14 +17,20 @@ import { generateRoundRobin, collectPreservedResults } from '@/lib/round-robin';
 import { computeStandings } from '@/lib/standings';
 import { generateBracket, generateFinalRound } from '@/lib/bracket';
 
-function buildTeamMaxGames(activeTeams: Team[], division: Division): Map<string, number> {
+// Hard per-team CEILINGS only (a team that can't play more than N). The
+// division `targetGames` is handled separately as a FLOOR (every team plays at
+// least that many, rounding up for parity) — see generateRoundRobin.
+function buildTeamCeilings(activeTeams: Team[]): Map<string, number> {
   const map = new Map<string, number>();
   for (const t of activeTeams) {
-    // Per-team override takes priority, then division-level target
-    const cap = t.maxGames ?? division.targetGames;
-    if (cap != null) map.set(t.id, cap);
+    if (t.maxGames != null) map.set(t.id, t.maxGames);
   }
   return map;
+}
+
+// Teams that are checked in and ready to play — prioritized onto the first courts.
+function buildReadyTeamIds(activeTeams: Team[]): Set<string> {
+  return new Set(activeTeams.filter(t => t.checkinStatus === 'ready').map(t => t.id));
 }
 
 function buildEvadePairs(activeTeams: Team[]): Set<string> {
@@ -386,8 +392,10 @@ export const useTournamentStore = create<TournamentState>()(
       },
 
       // Drop a team mid-tournament: marks it dropped and removes its
-      // round-robin matches (including completed results, as the drop
-      // dialog states). Finals matches are untouched.
+      // UNPLAYED round-robin matches (scheduled / bye / in-progress). COMPLETED
+      // games are KEPT so the opponent's already-played result still counts in
+      // its standings and game total (dropping C must not erase D's win over C).
+      // Finals matches are untouched.
       dropTeam: (teamId) => {
         set(state => {
           const team = state.tournament.teams[teamId];
@@ -402,7 +410,10 @@ export const useTournamentStore = create<TournamentState>()(
           for (const [id, match] of Object.entries(matches)) {
             if (match.isFinals) continue;
             if (match.homeTeamId === teamId || match.awayTeamId === teamId) {
-              delete matches[id];
+              // Keep completed results; only drop games that never finished.
+              if (match.status !== 'completed') {
+                delete matches[id];
+              }
             }
           }
 
@@ -759,16 +770,18 @@ export const useTournamentStore = create<TournamentState>()(
         const division = state.tournament.divisions[divisionId];
         if (!division || activeTeams.length < 2) return;
 
-        const teamMaxGames = buildTeamMaxGames(activeTeams, division);
-
+        const teamCeilings = buildTeamCeilings(activeTeams);
         const evadePairs = buildEvadePairs(activeTeams);
+        const readyTeamIds = buildReadyTeamIds(activeTeams);
 
         const matches = generateRoundRobin({
           teamIds: activeTeams.map(t => t.id),
           courtCount: division.courtCount,
           divisionId,
-          teamMaxGames: teamMaxGames.size > 0 ? teamMaxGames : undefined,
+          teamMaxGames: teamCeilings.size > 0 ? teamCeilings : undefined,
+          targetGames: division.targetGames ?? undefined,
           evadePairs: evadePairs.size > 0 ? evadePairs : undefined,
+          readyTeamIds: readyTeamIds.size > 0 ? readyTeamIds : undefined,
         });
 
         const matchMap: Record<string, Match> = {};
@@ -847,16 +860,19 @@ export const useTournamentStore = create<TournamentState>()(
           }
         }
 
-        const teamMaxGames = buildTeamMaxGames(activeTeams, division);
+        const teamCeilings = buildTeamCeilings(activeTeams);
         const evadePairs = buildEvadePairs(activeTeams);
+        const readyTeamIds = buildReadyTeamIds(activeTeams);
 
         const newMatches = generateRoundRobin({
           teamIds: activeTeams.map(t => t.id),
           courtCount: division.courtCount,
           divisionId,
           preservedResults: preserved,
-          teamMaxGames: teamMaxGames.size > 0 ? teamMaxGames : undefined,
+          teamMaxGames: teamCeilings.size > 0 ? teamCeilings : undefined,
+          targetGames: division.targetGames ?? undefined,
           evadePairs: evadePairs.size > 0 ? evadePairs : undefined,
+          readyTeamIds: readyTeamIds.size > 0 ? readyTeamIds : undefined,
         });
 
         // Only add back matches that aren't already kept (completed/in-progress)

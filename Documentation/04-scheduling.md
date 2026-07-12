@@ -14,14 +14,16 @@ interface RoundRobinOptions {
   courtCount: number;
   divisionId: string;
   preservedResults?: Map<string, {homeScore; awayScore}>; // restore played games
-  teamMaxGames?: Map<string, number>;   // teamId -> max games allowed
+  teamMaxGames?: Map<string, number>;   // teamId -> hard CEILING (per-team cap)
+  targetGames?: number;                 // division FLOOR: every team plays >= this
   evadePairs?: Set<string>;             // "teamA::teamB" (sorted) pairs to defer
+  readyTeamIds?: Set<string>;           // checked-in teams -> onto the first courts
 }
 ```
 
-The store builds `teamMaxGames` (`buildTeamMaxGames`: per-team `maxGames` ||
-division `targetGames`) and `evadePairs` (`buildEvadePairs`) from the active
-teams before calling it.
+The store builds these from the active teams before calling it:
+`buildTeamCeilings` (per-team `maxGames` only), `division.targetGames` (the
+floor), `buildEvadePairs`, and `buildReadyTeamIds` (`checkinStatus === 'ready'`).
 
 ## The base algorithm: circle method
 
@@ -57,34 +59,52 @@ rounds can be reordered. The scheduler counts evaded matchups per round and
 "teams to avoid" matchups toward the end (where they may be cut by game caps, or
 simply never reached if play runs out of time).
 
-### 3. Game caps (`teamMaxGames`) — convert excess matches to byes
+### 2b. Ready-first ordering — start play while teams are still checking in
 
-When teams have a game limit, a greedy pass walks the scheduled matches and turns
-excess ones into byes:
+`arrangeTeams(teamIds, readyTeamIds)` seeds the circle method so that **round 1's
+first courts are Ready-vs-Ready**. The circle method pairs mirror positions
+`(i, n−1−i)` in round 1, so placing checked-in (`ready`) teams at the first mirror
+pairs makes Court 1 / Court 2 open with Ready teams while WIP teams are still
+signing up. `reorderRounds` then keeps the Ready-heavy round as round 1 (and, as
+before, pushes evaded-heavy rounds last). The odd-team `__BYE__` is filled last so
+a **WIP** team — never a Ready team — sits out round 1. All non-dropped teams are
+still scheduled; Ready teams simply play first. (The Courts view places a round's
+scheduled matches on courts in array order, which is slot order, so the Ready
+pairs — the lowest slots — land on Courts 1 & 2.)
 
-- Completed/preserved games are counted first (they always count toward a cap).
-- Matches are processed **non-evaded first, then evaded**, so when a team hits its
-  cap the **evaded matchups are the ones dropped** preferentially.
-- For each scheduled match: if both teams are at cap → drop it entirely
-  (double-bye); if one team is at cap → the other gets a bye; otherwise keep it
-  and increment both counts.
+### 3. Target floor + game ceilings (`targetGames`, `teamMaxGames`)
 
-After the cap pass, double-bye matches are removed, rounds left with only byes are
-dropped, and **courts are assigned per round**: playable matches in a round get
-`courtNumber = (index % courtCount) + 1`.
+Two separate constraints, handled by `reduceToFloor` after a full round-robin is
+generated:
 
-### 4. Multi-attempt selection (only with caps)
+- **`targetGames` is a FLOOR** (the division "Teams play _N_ games" control):
+  every team plays **at least** `min(targetGames, n−1)` games. When parity forces
+  an odd total, one team plays **`target + 1`** — a team is **never** left below
+  the target. Excess matches are converted to byes, but only when **both** teams
+  stay at or above their floor, and **round 1 is never trimmed** (so the
+  Ready-first opening survives).
+- **`teamMaxGames` is a hard CEILING** (the per-team override box — e.g. a team
+  that must leave early): that team never plays more than its cap. A ceiling can
+  force a *neighbor* below the target floor (there may be no other way to satisfy
+  the cap) — **ceilings win over the floor**.
 
-The greedy cap pass is shuffle-dependent and can strand teams below their cap. So
-when `teamMaxGames` is set, `generateRoundRobin` runs **8 attempts** and keeps the
-best by `scoreSchedule`:
+Evaded / later-round / WIP-involving matches are cut first, so early
+Ready-vs-Ready matches survive. Completed/preserved games are locked and never
+removed. Afterward, double-bye matches are removed, byes-only rounds are dropped,
+and **courts are assigned per round** (`courtNumber = (index % courtCount) + 1`).
+
+### 4. Multi-attempt selection
+
+The reduce pass is shuffle-dependent, so when a target floor and/or ceilings apply
+`generateRoundRobin` runs **16 attempts** and keeps the best by `scoreSchedule`:
 
 ```
-score = (playable matches) * 1000 − (evaded matchups kept)
+score = −(shortfall × 1e6 + excess × 1e3 + evadedKept)
 ```
 
-i.e. **maximize games played**, and among equal counts prefer schedules that keep
-fewer evaded matchups. Without caps, a single full round-robin is generated.
+i.e. **first minimize shortfall** (teams below their floor — the worst outcome),
+then **minimize excess** above the floor, then keep fewer evaded matchups. Without
+a target or ceilings, a single full round-robin is generated.
 
 ## Regeneration semantics (`regenerateSchedule`)
 
